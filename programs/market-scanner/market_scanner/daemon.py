@@ -271,8 +271,13 @@ class OracleDaemon:
         scanner = LiveScanner(
             self._redis,
             symbols=[
+                # Top 30 by volume — 3x more signal surface area
                 "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
                 "DOGEUSDT", "AVAXUSDT", "LINKUSDT", "APTUSDT", "NEARUSDT",
+                "ADAUSDT", "DOTUSDT", "UNIUSDT", "AAVEUSDT", "LTCUSDT",
+                "ARBUSDT", "OPUSDT", "SUIUSDT", "INJUSDT", "FETUSDT",
+                "RENDERUSDT", "TIAUSDT", "LDOUSDT", "ATOMUSDT", "MKRUSDT",
+                "FILUSDT", "STXUSDT", "IMXUSDT", "RUNEUSDT", "PENDLEUSDT",
             ],
             interval="15m",
             ml_threshold=0.5,
