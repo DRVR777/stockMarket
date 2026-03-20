@@ -262,6 +262,10 @@ class OracleDaemon:
             self._run_position_checker(),
             self._run_outcome_checker(),
             self._run_status_reporter(),
+            self._run_stock_scanner(),
+            self._run_funding_scanner(),
+            self._run_polymarket_scanner(),
+            self._run_cascade_monitor(),
         )
 
     async def _run_scanner(self) -> None:
@@ -334,6 +338,139 @@ class OracleDaemon:
                 "journal": journal,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }))
+
+    async def _run_stock_scanner(self) -> None:
+        """Scan stocks every 15 minutes during market hours (9:30am-4pm ET)."""
+        from market_scanner.providers.stocks import StockProvider
+        from market_scanner.smc import analyze_smc
+        import pandas as pd
+
+        stocks = StockProvider()
+        tickers = [
+            "NVDA", "TSLA", "AAPL", "MSFT", "AMD", "SPY", "QQQ", "COIN",
+            "MSTR", "PLTR", "AMZN", "META", "SMCI", "ARM", "SOFI",
+            "MARA", "RIOT", "NFLX", "CRM", "UBER",
+        ]
+
+        while self._running:
+            try:
+                for ticker in tickers:
+                    df = await stocks.get_ohlcv(ticker, period="3mo")
+                    if len(df) < 60:
+                        continue
+                    smc = analyze_smc(df, ticker, "stock")
+                    if smc and smc.confidence >= 0.6 and smc.setup_type in ("ob_retest", "fvg_fill"):
+                        signal_data = {
+                            "symbol": ticker,
+                            "direction": "long" if smc.bias.value == "bullish" else "short",
+                            "current_price": smc.current_price,
+                            "ml_win_probability": smc.confidence,
+                            "smc_confidence": smc.confidence,
+                            "setup_type": smc.setup_type,
+                            "signals": smc.signals[:5],
+                            "stop_loss": smc.stop_loss,
+                            "take_profit": smc.take_profit,
+                            "asset_type": "stock",
+                        }
+                        await self._journal.log_signal(signal_data)
+                        await self._paper.on_signal(signal_data)
+                        logger.info("Stock signal: %s %s  conf=%.0f%%  setup=%s",
+                                    signal_data["direction"].upper(), ticker,
+                                    smc.confidence * 100, smc.setup_type)
+            except Exception:
+                logger.debug("Stock scan cycle failed", exc_info=True)
+
+            await asyncio.sleep(900)  # every 15 min
+
+    async def _run_funding_scanner(self) -> None:
+        """Scan funding rates every hour for carry trade opportunities."""
+        from market_scanner.funding_scanner import scan_funding
+
+        while self._running:
+            try:
+                opps = await scan_funding(min_rate_pct=0.05, min_volume_usd=5_000_000)
+                for opp in opps[:5]:
+                    signal_data = {
+                        "symbol": opp.symbol,
+                        "direction": opp.direction,
+                        "current_price": opp.price,
+                        "ml_win_probability": 0.7,  # funding farming has inherent edge
+                        "smc_confidence": 0.0,
+                        "setup_type": "funding_farm",
+                        "signals": [f"rate={opp.funding_rate:+.3f}%", f"daily={opp.daily_income_pct:.2f}%"],
+                        "stop_loss": None,
+                        "take_profit": None,
+                        "asset_type": "crypto_funding",
+                    }
+                    await self._journal.log_signal(signal_data)
+                    logger.info("Funding signal: %s %s  rate=%+.3f%%/8h  daily=%.2f%%",
+                                opp.direction.upper(), opp.symbol,
+                                opp.funding_rate, opp.daily_income_pct)
+            except Exception:
+                logger.debug("Funding scan failed", exc_info=True)
+
+            await asyncio.sleep(3600)  # every hour
+
+    async def _run_polymarket_scanner(self) -> None:
+        """Scan Polymarket every 30 minutes for mispriced markets."""
+        from market_scanner.polymarket_scanner import scan_polymarket
+
+        while self._running:
+            try:
+                opps = await scan_polymarket(min_delta=0.08, min_liquidity=1000, max_markets=10)
+                for opp in opps[:3]:
+                    signal_data = {
+                        "symbol": f"POLY_{opp.condition_id[:12]}",
+                        "direction": opp.direction,
+                        "current_price": opp.market_price_yes,
+                        "ml_win_probability": opp.confidence,
+                        "smc_confidence": 0.0,
+                        "setup_type": "polymarket_mispricing",
+                        "signals": [f"delta={opp.delta:+.1%}", opp.reasoning[:50]],
+                        "stop_loss": None,
+                        "take_profit": None,
+                        "asset_type": "prediction_market",
+                        "question": opp.question,
+                    }
+                    await self._journal.log_signal(signal_data)
+                    logger.info("Polymarket signal: %s  delta=%+.1f%%  \"%s\"",
+                                opp.direction, opp.delta * 100, opp.question[:50])
+            except Exception:
+                logger.debug("Polymarket scan failed", exc_info=True)
+
+            await asyncio.sleep(1800)  # every 30 min
+
+    async def _run_cascade_monitor(self) -> None:
+        """Monitor liquidation cascade risk every 5 minutes."""
+        from market_scanner.liquidation_predictor import CascadePredictor
+
+        predictor = CascadePredictor(self._redis)
+        while self._running:
+            try:
+                risks = await predictor.scan()
+                high_risk = [r for r in risks if r.risk_score >= 0.5]
+                for r in high_risk:
+                    direction = "short" if r.crowded_direction == "long" else "long"
+                    signal_data = {
+                        "symbol": r.symbol,
+                        "direction": direction,
+                        "current_price": 0,
+                        "ml_win_probability": r.risk_score,
+                        "smc_confidence": 0.0,
+                        "setup_type": "cascade_risk",
+                        "signals": r.signals[:5],
+                        "stop_loss": None,
+                        "take_profit": None,
+                        "asset_type": "crypto_cascade",
+                    }
+                    await self._journal.log_signal(signal_data)
+                    logger.info("Cascade signal: %s %s  risk=%.0f%%  crowd=%s %.0f%%",
+                                direction.upper(), r.symbol,
+                                r.risk_score * 100, r.crowded_direction, r.crowd_pct)
+            except Exception:
+                logger.debug("Cascade monitor failed", exc_info=True)
+
+            await asyncio.sleep(300)  # every 5 min
 
     async def stop(self) -> None:
         self._running = False
