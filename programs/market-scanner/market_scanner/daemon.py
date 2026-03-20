@@ -188,16 +188,26 @@ class PaperTrader:
                 price = candles[0].close
 
                 close_reason = None
+                sl = trade.get("stop_loss")
+                tp = trade.get("take_profit")
+
                 if trade["direction"] == "long":
-                    if trade["take_profit"] and price >= trade["take_profit"]:
+                    if tp is not None and price >= tp:
                         close_reason = "take_profit"
-                    elif trade["stop_loss"] and price <= trade["stop_loss"]:
+                    elif sl is not None and price <= sl:
                         close_reason = "stop_loss"
                 else:
-                    if trade["take_profit"] and price <= trade["take_profit"]:
+                    if tp is not None and price <= tp:
                         close_reason = "take_profit"
-                    elif trade["stop_loss"] and price >= trade["stop_loss"]:
+                    elif sl is not None and price >= sl:
                         close_reason = "stop_loss"
+
+                # Timeout: close after 24h if no SL/TP hit
+                from dateutil import parser as dp
+                opened = dp.parse(trade.get("opened_at", datetime.now(timezone.utc).isoformat()))
+                if (datetime.now(timezone.utc) - opened.replace(tzinfo=timezone.utc if opened.tzinfo is None else opened.tzinfo)) > timedelta(hours=24):
+                    if not close_reason:
+                        close_reason = "timeout"
 
                 if close_reason:
                     if trade["direction"] == "long":

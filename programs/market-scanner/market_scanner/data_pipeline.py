@@ -162,9 +162,18 @@ class DataPipeline:
             elif trade_data.get("close_reason") == "stop_loss":
                 exit_reason = ExitReason.STOP_LOSS
 
+            # Determine market type from asset_type
+            asset_type = trade_data.get("asset_type", "")
+            if asset_type == "stock":
+                market_type = MarketType.POLYMARKET  # closest for stocks
+            elif asset_type == "prediction_market":
+                market_type = MarketType.POLYMARKET
+            else:
+                market_type = MarketType.SOLANA  # crypto default
+
             execution = TradeExecution(
                 market_id=trade_data.get("symbol", ""),
-                market_type=MarketType.SOLANA,  # generic
+                market_type=market_type,
                 direction=trade_data.get("direction", "buy"),
                 entry_price=trade_data.get("entry_price", 0),
                 size_usd=trade_data.get("size_usd", 0),
