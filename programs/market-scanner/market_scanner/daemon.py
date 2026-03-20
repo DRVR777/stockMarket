@@ -252,6 +252,10 @@ class OracleDaemon:
         self._paper = PaperTrader(redis_client)
         self._running = False
 
+        # Data pipeline — persists everything to Postgres + embeds text
+        from market_scanner.data_pipeline import DataPipeline
+        self._pipeline = DataPipeline(redis_client)
+
     async def start(self) -> None:
         """Start all processes concurrently."""
         self._running = True
@@ -303,6 +307,7 @@ class OracleDaemon:
                 "stop_loss": result.entry_zone[0] * 0.98 if result.entry_zone else None,
                 "take_profit": result.entry_zone[1] * 1.05 if result.entry_zone else None,
             }
+            await self._pipeline.process_signal(signal_data)
             await self._journal.log_signal(signal_data)
             await self._paper.on_signal(signal_data)
 
@@ -372,6 +377,7 @@ class OracleDaemon:
                             "take_profit": smc.take_profit,
                             "asset_type": "stock",
                         }
+                        await self._pipeline.process_signal(signal_data)
                         await self._journal.log_signal(signal_data)
                         await self._paper.on_signal(signal_data)
                         logger.info("Stock signal: %s %s  conf=%.0f%%  setup=%s",
@@ -402,6 +408,7 @@ class OracleDaemon:
                         "take_profit": None,
                         "asset_type": "crypto_funding",
                     }
+                    await self._pipeline.process_signal(signal_data)
                     await self._journal.log_signal(signal_data)
                     logger.info("Funding signal: %s %s  rate=%+.3f%%/8h  daily=%.2f%%",
                                 opp.direction.upper(), opp.symbol,
@@ -432,6 +439,7 @@ class OracleDaemon:
                         "asset_type": "prediction_market",
                         "question": opp.question,
                     }
+                    await self._pipeline.process_signal(signal_data)
                     await self._journal.log_signal(signal_data)
                     logger.info("Polymarket signal: %s  delta=%+.1f%%  \"%s\"",
                                 opp.direction, opp.delta * 100, opp.question[:50])
@@ -463,6 +471,7 @@ class OracleDaemon:
                         "take_profit": None,
                         "asset_type": "crypto_cascade",
                     }
+                    await self._pipeline.process_signal(signal_data)
                     await self._journal.log_signal(signal_data)
                     logger.info("Cascade signal: %s %s  risk=%.0f%%  crowd=%s %.0f%%",
                                 direction.upper(), r.symbol,
