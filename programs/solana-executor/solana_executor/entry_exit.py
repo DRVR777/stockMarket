@@ -43,19 +43,31 @@ logger = logging.getLogger(__name__)
 
 
 class EntryExitEngine:
-    """Chain-agnostic entry/exit logic for mean-reversion trading."""
+    """Chain-agnostic entry/exit logic for mean-reversion trading.
+
+    Supports optional ML model gate — when a classifier is provided,
+    trades are only taken if the model predicts > ml_threshold win probability.
+    """
 
     def __init__(
         self,
         redis_client: Any,
         chain: ChainAdapter,
+        ml_model: Any = None,
+        ml_threshold: float = 0.6,
     ) -> None:
         self._redis = redis_client
         self._chain = chain
+        self._ml_model = ml_model
+        self._ml_threshold = ml_threshold
 
     # ── Entry check (Task 5) ──────────────────────────────────────────────────
 
-    async def check_entry(self, model: AssetModel) -> Optional[TradeExecution]:
+    async def check_entry(
+        self,
+        model: AssetModel,
+        ohlcv_df: Any = None,
+    ) -> Optional[TradeExecution]:
         """Check entry conditions and execute if met. Returns TradeExecution or None."""
         price = model.current_price
         if price <= 0 or model.ma_20 <= 0:
@@ -73,7 +85,7 @@ class EntryExitEngine:
 
         # Circuit breaker check
         if await self._is_circuit_breaker_active():
-            logger.debug("EntryExitEngine: circuit breaker active — skipping entry")
+            logger.debug("EntryExitEngine: circuit breaker active -- skipping entry")
             return None
 
         # Position limit check
@@ -83,6 +95,26 @@ class EntryExitEngine:
         ))
         if open_count >= max_concurrent:
             return None
+
+        # ML model gate — only trade if model predicts high win probability
+        if self._ml_model is not None and ohlcv_df is not None:
+            try:
+                from market_scanner.ml_classifier import extract_features
+                feats = extract_features(ohlcv_df, len(ohlcv_df) - 1, "long")
+                feats["bias_is_bullish"] = 1.0
+                win_prob = self._ml_model.predict(feats)
+                if win_prob < self._ml_threshold:
+                    logger.debug(
+                        "EntryExitEngine: ML gate rejected %s (prob=%.1f%% < %.0f%%)",
+                        model.symbol, win_prob * 100, self._ml_threshold * 100,
+                    )
+                    return None
+                logger.info(
+                    "EntryExitEngine: ML gate approved %s (prob=%.1f%%)",
+                    model.symbol, win_prob * 100,
+                )
+            except Exception:
+                logger.debug("EntryExitEngine: ML gate error, proceeding without", exc_info=True)
 
         # Execute
         max_pos = await self._get_param("soe_max_position_usd", MAX_POSITION_USD)
