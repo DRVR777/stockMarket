@@ -133,14 +133,18 @@ class LiveScanner:
         logger.info("LiveScanner: stopped")
 
     def _load_model(self) -> None:
-        """Load the best available ML model."""
-        # Models can be in ./models/ (cwd) or alongside the package
+        """Load the best available ML model (newest/best first)."""
         base = Path(__file__).parent.parent  # market-scanner root
         model_paths = [
+            # V3 first (best: 108k trades, 68% accuracy)
+            base / "models" / "v3_latest.pkl",
+            base / "models" / "v3_108368trades_68pct.pkl",
+            Path("models") / "v3_latest.pkl",
+            # V2 fallback
             base / "models" / "v2_expanded.pkl",
-            base / "models" / "v2_3186trades_64pct.pkl",
-            base / "models" / "expanded_classifier.pkl",
             Path("models") / "v2_expanded.pkl",
+            # V1 fallback
+            base / "models" / "expanded_classifier.pkl",
             Path("models") / "expanded_classifier.pkl",
         ]
         for path in model_paths:

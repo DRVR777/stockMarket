@@ -304,8 +304,8 @@ class OracleDaemon:
                 "smc_confidence": result.confidence,
                 "setup_type": result.setup_type,
                 "signals": result.signals,
-                "stop_loss": result.entry_zone[0] * 0.98 if result.entry_zone else None,
-                "take_profit": result.entry_zone[1] * 1.05 if result.entry_zone else None,
+                "stop_loss": result.stop_loss,      # actual SMC support/resistance level
+                "take_profit": result.take_profit,  # actual SMC target level
             }
             await self._pipeline.process_signal(signal_data)
             await self._journal.log_signal(signal_data)
