@@ -60,6 +60,12 @@ class ConvergenceAlert:
     timeframe: str = ""
     timestamp: str = ""
 
+    # Regime-adjusted sizing
+    regime: str = ""                 # "ranging", "high_volatility", etc.
+    position_size_mult: float = 1.0  # regime-adjusted position multiplier
+    stop_loss_mult: float = 1.0     # regime-adjusted stop width multiplier
+    suggested_position_usd: float = 0.0  # for $10k portfolio
+
     def format_alert(self) -> str:
         """Format as a readable alert message."""
         d = "LONG" if self.direction == "long" else "SHORT"
@@ -92,6 +98,11 @@ class ConvergenceAlert:
             side = "buy" if self.ob_imbalance > 0 else "sell"
             lines.append(f"    Order book:     {side} pressure ({self.ob_imbalance:+.2f})")
         lines.append(f"\n  Signals: {', '.join(self.signals[:5])}")
+        if self.regime:
+            lines.append(f"\n  Regime: {self.regime.upper()}")
+            lines.append(f"  Position: {self.position_size_mult:.1f}x normal (${self.suggested_position_usd:,.0f} on $10k)")
+            if self.stop_loss_mult != 1.0:
+                lines.append(f"  Stop width: {self.stop_loss_mult:.1f}x normal")
         return "\n".join(lines)
 
 
@@ -117,7 +128,7 @@ class AlertEngine:
         ]
 
         # Collect all signal sources in parallel
-        smc_data, mtf_data, news_data, cascade_data, ob_data, ls_data = (
+        smc_data, mtf_data, news_data, cascade_data, ob_data, ls_data, regime_data = (
             await asyncio.gather(
                 self._get_smc_signals(symbols),
                 self._get_mtf_signals(symbols),
@@ -125,6 +136,7 @@ class AlertEngine:
                 self._get_cascade_signals(symbols),
                 self._get_orderbook_signals(symbols),
                 self._get_ls_ratios(symbols),
+                self._get_regime_data(symbols),
                 return_exceptions=True,
             )
         )
@@ -142,6 +154,8 @@ class AlertEngine:
             ob_data = {}
         if isinstance(ls_data, Exception):
             ls_data = {}
+        if isinstance(regime_data, Exception):
+            regime_data = {}
 
         # Compute convergence for each symbol
         alerts: list[ConvergenceAlert] = []
@@ -149,6 +163,15 @@ class AlertEngine:
             alert = self._compute_convergence(
                 sym, smc_data, mtf_data, news_data, cascade_data, ob_data, ls_data,
             )
+            if alert and alert.conviction >= self._min_conviction:
+                # Apply regime adjustments
+                regime = regime_data.get(sym, {})
+                if regime:
+                    alert.regime = regime.get("regime", "")
+                    alert.position_size_mult = regime.get("pos_mult", 1.0)
+                    alert.stop_loss_mult = regime.get("sl_mult", 1.0)
+                    base_position = 10000 * 0.05  # 5% of $10k
+                    alert.suggested_position_usd = round(base_position * alert.position_size_mult, 0)
             if alert and alert.conviction >= self._min_conviction:
                 alerts.append(alert)
                 if self._redis:
@@ -394,6 +417,35 @@ class AlertEngine:
                     await asyncio.sleep(0.05)
                 except Exception:
                     pass
+        return results
+
+    async def _get_regime_data(self, symbols: list[str]) -> dict:
+        """Get market regime for each symbol."""
+        from market_scanner.providers.binance_ws import BinanceKlineProvider
+        from market_scanner.regime_detector import detect_regime
+        import pandas as pd
+
+        provider = BinanceKlineProvider()
+        results = {}
+        for sym in symbols:
+            try:
+                candles = await provider.get_recent_klines(sym, interval="1d", limit=250)
+                if len(candles) < 50:
+                    continue
+                df = pd.DataFrame([
+                    {"open": c.open, "high": c.high, "low": c.low,
+                     "close": c.close, "volume": c.volume}
+                    for c in candles
+                ])
+                regime = detect_regime(df)
+                results[sym] = {
+                    "regime": regime.regime.value,
+                    "pos_mult": regime.position_size_multiplier,
+                    "sl_mult": regime.stop_loss_multiplier,
+                    "strategy": regime.preferred_strategy,
+                }
+            except Exception:
+                pass
         return results
 
     async def _publish(self, alert: ConvergenceAlert) -> None:
