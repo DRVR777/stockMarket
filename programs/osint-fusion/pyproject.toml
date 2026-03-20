@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "osint-fusion"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "oracle-shared",
+    "redis[hiredis]>=5.0",
+    "python-dotenv>=1.0",
+    "openai>=1.0",
+    "chromadb>=0.4",
+    "anthropic>=0.30",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["osint_fusion"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

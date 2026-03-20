@@ -1,0 +1,35 @@
+# INFERENCE LOG — oracle scope
+# Format: [ISO-8601-timestamp] | [program] | [file-consulted] | inferred "[what]" — no file states this
+# Cross-project inferences → root _meta/gaps/pending.txt instead
+# Do not edit existing entries. Only append.
+
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "project oracle does not exist — scaffolding from PRD (ORACLE PRD v0.1 DRAFT)" — PRD is the source, not an existing architecture file
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "programs are: signal-ingestion, whale-detector, osint-fusion, solana-executor, reasoning-engine, knowledge-base, operator-dashboard" — derived from PRD Section 2 module descriptions
+2026-03-14T00:00:00Z | oracle/shared | PRD | inferred "contracts needed: Signal, AnomalyEvent, Insight, TradeThesis, WalletProfile, MarketState, TradeExecution, PostMortem, OperatorAlert" — derived from inter-module data flows in PRD
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "Polygon RPC provider is Alchemy" — PRD requires on-chain listening but does not specify provider (ADR-011)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "embedding model is OpenAI text-embedding-3-small" — PRD requires vector embedding but does not specify model (ADR-012)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "vector store is ChromaDB" — PRD requires semantic similarity search but does not specify store (ADR-013)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "event bus is Redis pub/sub" — PRD requires shared event bus but does not specify implementation (ADR-014)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "shared state layer is Redis" — PRD requires shared state layer but does not specify (ADR-015)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "Solana price oracle is Birdeye, execution via Jupiter" — PRD requires DEX/oracle feed but does not specify (ADR-016)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "Polymarket wallet management is server-side env-var keypair using py-clob-client" — PRD requires order placement but does not specify wallet management (ADR-017)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "operator dashboard is local web app (FastAPI + HTML/JS)" — PRD describes interface requirements but not delivery mode (ADR-018)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "alert notifications delivered via Telegram bot" — PRD requires notification layer but does not specify mechanism (ADR-019)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "RE scheduled scan triggered by internal async scheduler (APScheduler/setInterval)" — PRD specifies schedule-based scanning but not trigger mechanism (ADR-020)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "SOE uses separate Solana wallet, Polymarket uses separate Polygon wallet, no cross-chain capital movement" — PRD does not specify wallet separation (ADR-021)
+2026-03-14T00:00:00Z | oracle/_planning | PRD | inferred "launch OSINT sources: NewsAPI, Polymarket descriptions, Wikipedia Recent Changes, Reddit API" — PRD lists many possible sources but does not specify launch set (ADR-022)
+2026-03-14T01:00:00Z | signal-ingestion | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | whale-detector | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | osint-fusion | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | reasoning-engine | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | knowledge-base | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | solana-executor | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | operator-dashboard | spec-review.md | inferred "spec review passed — program is ready to build" — verified state transition
+2026-03-14T01:00:00Z | osint-fusion | CONTEXT.md | inferred "semantic_state_summary uses claude-haiku-4-5-20251001 not claude-sonnet-4-6 for cost efficiency" — no file stated this; logged for RE cost-awareness
+2026-03-14T01:00:00Z | osint-fusion | CONTEXT.md | inferred "polygon_clob and birdeye signals are skipped by OSFE (no text content)" — PRD does not explicitly state this
+2026-03-14T01:00:00Z | operator-dashboard | CONTEXT.md | inferred "copy_trade approval publishes to oracle:copy_trade_approved:{anomaly_event_id} for SIL execution path" — no contract defines this channel
+2026-03-15T00:00:00Z | signal-ingestion | adapters/polymarket_rest.py | inferred "use httpx.AsyncClient directly for REST polling instead of py-clob-client" — CONTEXT.md specifies py-clob-client as dependency but ClobClient is synchronous; httpx is cleaner for async polling
+2026-03-15T00:00:00Z | signal-ingestion | adapters/polymarket_rest.py | inferred "Polymarket pagination end sentinel is 'LTE='" — common Polymarket CLOB convention, no file in oracle/ states this
+2026-03-15T00:00:00Z | signal-ingestion | adapters/polymarket_rest.py | inferred "initial /markets request omits next_cursor param; include it only on subsequent pages" — Polymarket CLOB API convention, not documented in oracle/ files
+2026-03-15T00:00:00Z | signal-ingestion | adapters/polymarket_rest.py | inferred "outcome label keys in outcome_prices use the token 'outcome' field verbatim (e.g. 'Yes'/'No')" — signal.md shows {YES: float, NO: float} but Polymarket API returns mixed-case; adapter preserves API casing
+2026-03-16T04:12:00Z | signal-ingestion | adapters/polymarket_rest.py | confirmed via live run: active=true and closed=false query params are silently ignored by Polymarket CLOB /markets — API returns all 610k+ historical markets regardless; fix: client-side filter on market.active==True and market.closed==False reduces to ~34k live markets

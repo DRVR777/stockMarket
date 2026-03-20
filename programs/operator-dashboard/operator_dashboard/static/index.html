@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORACLE Operator Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0a0e17; color: #e0e0e0; }
+  .container { max-width: 1400px; margin: 0 auto; padding: 16px; }
+  header { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #1e293b; margin-bottom: 16px; }
+  header h1 { font-size: 1.4em; color: #60a5fa; }
+  .status { font-size: 0.85em; padding: 4px 12px; border-radius: 12px; }
+  .status.connected { background: #065f46; color: #6ee7b7; }
+  .status.disconnected { background: #7f1d1d; color: #fca5a5; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: #111827; border: 1px solid #1e293b; border-radius: 8px; padding: 16px; }
+  .panel h2 { font-size: 1em; color: #94a3b8; margin-bottom: 12px; border-bottom: 1px solid #1e293b; padding-bottom: 8px; }
+  .panel.full-width { grid-column: 1 / -1; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+  th { text-align: left; color: #64748b; padding: 6px 8px; border-bottom: 1px solid #1e293b; }
+  td { padding: 6px 8px; border-bottom: 1px solid #0f172a; }
+  .badge { padding: 2px 8px; border-radius: 4px; font-size: 0.75em; font-weight: 600; }
+  .badge-execute { background: #065f46; color: #6ee7b7; }
+  .badge-review { background: #78350f; color: #fbbf24; }
+  .badge-skip { background: #1e293b; color: #64748b; }
+  .badge-yes { background: #065f46; color: #6ee7b7; }
+  .badge-no { background: #7f1d1d; color: #fca5a5; }
+  .pnl-pos { color: #6ee7b7; }
+  .pnl-neg { color: #fca5a5; }
+  .btn { padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em; }
+  .btn-approve { background: #065f46; color: #6ee7b7; }
+  .btn-dismiss { background: #1e293b; color: #94a3b8; }
+  .btn:hover { opacity: 0.8; }
+  .alert-item { padding: 10px; margin-bottom: 8px; border-left: 3px solid #f59e0b; background: #1a1a2e; border-radius: 4px; }
+  .alert-item.action-required { border-left-color: #ef4444; }
+  .pm-item { padding: 10px; margin-bottom: 8px; background: #1a1a2e; border-radius: 4px; }
+  #params-form input, #params-form select { background: #1e293b; border: 1px solid #334155; color: #e0e0e0; padding: 4px 8px; border-radius: 4px; width: 120px; }
+  #params-form label { display: inline-block; width: 220px; color: #94a3b8; font-size: 0.85em; }
+  #params-form .row { margin-bottom: 6px; }
+  .count { color: #64748b; font-size: 0.8em; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>ORACLE Operator Dashboard</h1>
+    <span id="ws-status" class="status disconnected">Disconnected</span>
+  </header>
+
+  <div class="grid">
+    <!-- Alerts -->
+    <div class="panel">
+      <h2>Alerts <span id="alert-count" class="count">(0)</span></h2>
+      <div id="alerts-list"></div>
+    </div>
+
+    <!-- Theses -->
+    <div class="panel">
+      <h2>Active Theses <span id="thesis-count" class="count">(0)</span></h2>
+      <table><thead><tr>
+        <th>Market</th><th>Dir</th><th>RE Prob</th><th>Mkt</th><th>Delta</th><th>Conf</th><th>Decision</th>
+      </tr></thead><tbody id="thesis-table"></tbody></table>
+    </div>
+
+    <!-- SOE Positions -->
+    <div class="panel">
+      <h2>SOE Positions <span id="position-count" class="count">(0)</span></h2>
+      <table><thead><tr>
+        <th>Asset</th><th>Entry</th><th>Current</th><th>PnL</th><th>Status</th>
+      </tr></thead><tbody id="position-table"></tbody></table>
+    </div>
+
+    <!-- Post-Mortems -->
+    <div class="panel">
+      <h2>Post-Mortem Feed <span id="pm-count" class="count">(0)</span></h2>
+      <div id="postmortem-feed"></div>
+    </div>
+
+    <!-- Params -->
+    <div class="panel full-width">
+      <h2>Parameter Control</h2>
+      <form id="params-form"></form>
+      <button class="btn btn-approve" onclick="saveParams()" style="margin-top:8px">Save Parameters</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const PARAMS_SCHEMA = [
+  {key:'large_order_threshold_usd', label:'Large Order Threshold ($)', default:'5000'},
+  {key:'copy_trade_threshold', label:'Copy Trade Score Threshold', default:'0.7'},
+  {key:'re_delta_threshold', label:'RE Delta Threshold', default:'0.10'},
+  {key:'re_confidence_min', label:'RE Min Confidence', default:'0.45'},
+  {key:'re_scan_interval_minutes', label:'RE Scan Interval (min)', default:'30'},
+  {key:'soe_entry_floor_pct', label:'SOE Entry Floor %', default:'0.05'},
+  {key:'soe_take_profit_pct', label:'SOE Take Profit %', default:'0.08'},
+  {key:'soe_stop_loss_pct', label:'SOE Stop Loss %', default:'0.04'},
+  {key:'soe_max_position_usd', label:'SOE Max Position ($)', default:'500'},
+  {key:'soe_daily_loss_ceiling_usd', label:'SOE Daily Loss Ceiling ($)', default:'200'},
+];
+
+let ws;
+let theses = {};
+let positions = {};
+let alertCount = 0, pmCount = 0;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => {
+    document.getElementById('ws-status').className = 'status connected';
+    document.getElementById('ws-status').textContent = 'Connected';
+  };
+  ws.onclose = () => {
+    document.getElementById('ws-status').className = 'status disconnected';
+    document.getElementById('ws-status').textContent = 'Disconnected';
+    setTimeout(connect, 3000);
+  };
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    handleEvent(msg.type, msg.data);
+  };
+  // Keep alive
+  setInterval(() => { if(ws.readyState === 1) ws.send('ping'); }, 30000);
+}
+
+function handleEvent(type, data) {
+  switch(type) {
+    case 'operator_alert':
+    case 'anomaly_event':
+      addAlert(data, type); break;
+    case 'trade_thesis':
+      updateThesis(data); break;
+    case 'trade_execution':
+      updatePosition(data); break;
+    case 'post_mortem':
+      addPostMortem(data); break;
+  }
+}
+
+function addAlert(d, type) {
+  const el = document.createElement('div');
+  const isAction = d.action_required || d.copy_trade_eligible;
+  el.className = `alert-item${isAction ? ' action-required' : ''}`;
+  const wallet = (d.wallet_address || '').slice(0, 10);
+  const score = (d.anomaly_score || 0).toFixed(3);
+  const amount = d.notional_usd ? `$${Number(d.notional_usd).toLocaleString()}` : '';
+  const reasons = (d.trigger_reasons || []).join(', ');
+  let html = `<strong>${d.title || wallet}</strong> ${amount} score=${score}<br><small>${reasons}</small>`;
+  if(isAction) {
+    const aid = d.alert_id || '';
+    const eid = d.event_id || d.anomaly_event_id || '';
+    html += `<br><button class="btn btn-approve" onclick="doAction('approve_copy_trade','${aid}','${eid}')">Approve</button> `;
+    html += `<button class="btn btn-dismiss" onclick="doAction('dismiss','${aid}','${eid}')">Dismiss</button>`;
+  }
+  el.innerHTML = html;
+  const list = document.getElementById('alerts-list');
+  list.prepend(el);
+  alertCount++;
+  document.getElementById('alert-count').textContent = `(${alertCount})`;
+}
+
+function updateThesis(d) {
+  if(d.decision === 'skip') return;
+  theses[d.thesis_id] = d;
+  renderTheses();
+}
+
+function renderTheses() {
+  const tbody = document.getElementById('thesis-table');
+  tbody.innerHTML = '';
+  const items = Object.values(theses).sort((a,b) => b.confidence_score - a.confidence_score);
+  for(const t of items) {
+    const delta = t.probability_delta;
+    const deltaClass = delta > 0 ? 'pnl-pos' : 'pnl-neg';
+    const badge = t.decision === 'execute' ? 'badge-execute' : 'badge-review';
+    tbody.innerHTML += `<tr>
+      <td>${(t.market_question||'').slice(0,40)}</td>
+      <td><span class="badge ${t.direction==='YES'?'badge-yes':'badge-no'}">${t.direction}</span></td>
+      <td>${(t.re_probability_estimate||0).toFixed(2)}</td>
+      <td>${(t.market_implied_probability||0).toFixed(2)}</td>
+      <td class="${deltaClass}">${delta>0?'+':''}${delta.toFixed(3)}</td>
+      <td>${(t.confidence_score||0).toFixed(2)}</td>
+      <td><span class="badge ${badge}">${t.decision}</span></td>
+    </tr>`;
+  }
+  document.getElementById('thesis-count').textContent = `(${items.length})`;
+}
+
+function updatePosition(d) {
+  positions[d.execution_id] = d;
+  renderPositions();
+}
+
+function renderPositions() {
+  const tbody = document.getElementById('position-table');
+  tbody.innerHTML = '';
+  const items = Object.values(positions).filter(p => p.status === 'open');
+  for(const p of items) {
+    const pnl = p.realized_pnl_usd || 0;
+    const pnlClass = pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+    tbody.innerHTML += `<tr>
+      <td>${p.market_id.slice(0,12)}</td>
+      <td>$${p.entry_price.toFixed(4)}</td>
+      <td>-</td>
+      <td class="${pnlClass}">$${pnl.toFixed(2)}</td>
+      <td>${p.status}</td>
+    </tr>`;
+  }
+  document.getElementById('position-count').textContent = `(${items.length})`;
+}
+
+function addPostMortem(d) {
+  const el = document.createElement('div');
+  el.className = 'pm-item';
+  const correct = d.thesis_was_correct;
+  const badge = correct === true ? 'badge-yes' : correct === false ? 'badge-no' : 'badge-skip';
+  const label = correct === true ? 'WIN' : correct === false ? 'LOSS' : 'N/A';
+  const pnl = d.realized_pnl_usd || 0;
+  el.innerHTML = `
+    <strong>${(d.market_question||d.market_id||'').slice(0,50)}</strong>
+    <span class="badge ${badge}">${label}</span>
+    Resolved: ${d.market_resolved_as} | PnL: <span class="${pnl>=0?'pnl-pos':'pnl-neg'}">$${pnl.toFixed(2)}</span>
+    <br><small>${d.what_happened||''}</small>`;
+  document.getElementById('postmortem-feed').prepend(el);
+  pmCount++;
+  document.getElementById('pm-count').textContent = `(${pmCount})`;
+}
+
+async function doAction(action, alertId, eventId) {
+  const resp = await fetch('/action', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action, alert_id: alertId, anomaly_event_id: eventId}),
+  });
+  const data = await resp.json();
+  alert(`Action: ${data.status}`);
+}
+
+async function loadParams() {
+  const resp = await fetch('/params');
+  const {params} = await resp.json();
+  const form = document.getElementById('params-form');
+  form.innerHTML = '';
+  for(const s of PARAMS_SCHEMA) {
+    const val = params[s.key] || s.default;
+    form.innerHTML += `<div class="row"><label>${s.label}</label><input name="${s.key}" value="${val}"></div>`;
+  }
+}
+
+async function saveParams() {
+  const form = document.getElementById('params-form');
+  const inputs = form.querySelectorAll('input');
+  const params = {};
+  inputs.forEach(i => { params[i.name] = i.value; });
+  await fetch('/params', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({params}),
+  });
+  alert('Parameters saved');
+}
+
+// Init
+connect();
+loadParams();
+</script>
+</body>
+</html>
