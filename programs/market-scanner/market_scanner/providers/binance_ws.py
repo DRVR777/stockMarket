@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 
 import websockets
+from websockets.exceptions import ConnectionClosedError, WebSocketException
 
 logger = logging.getLogger(__name__)
 
@@ -66,33 +67,45 @@ class BinanceKlineProvider:
             len(symbols), interval,
         )
 
-        async with websockets.connect(url, ping_interval=20) as ws:
-            async for raw in ws:
-                try:
-                    data = json.loads(raw)
-                    # Combined stream wraps in {"stream": "...", "data": {...}}
-                    if "data" in data:
-                        data = data["data"]
+        backoff = 1
+        while True:
+            try:
+                async with websockets.connect(url, ping_interval=20, ping_timeout=30) as ws:
+                    backoff = 1  # reset on successful connection
+                    logger.info("BinanceKlineProvider: connected")
+                    async for raw in ws:
+                        try:
+                            data = json.loads(raw)
+                            # Combined stream wraps in {"stream": "...", "data": {...}}
+                            if "data" in data:
+                                data = data["data"]
 
-                    if data.get("e") != "kline":
-                        continue
+                            if data.get("e") != "kline":
+                                continue
 
-                    k = data["k"]
-                    yield KlineCandle(
-                        symbol=k["s"],
-                        interval=k["i"],
-                        open_time=k["t"],
-                        open=float(k["o"]),
-                        high=float(k["h"]),
-                        low=float(k["l"]),
-                        close=float(k["c"]),
-                        volume=float(k["v"]),
-                        close_time=k["T"],
-                        is_closed=k["x"],
-                    )
-                except (json.JSONDecodeError, KeyError, TypeError) as e:
-                    logger.debug("BinanceKlineProvider: parse error: %s", e)
-                    continue
+                            k = data["k"]
+                            yield KlineCandle(
+                                symbol=k["s"],
+                                interval=k["i"],
+                                open_time=k["t"],
+                                open=float(k["o"]),
+                                high=float(k["h"]),
+                                low=float(k["l"]),
+                                close=float(k["c"]),
+                                volume=float(k["v"]),
+                                close_time=k["T"],
+                                is_closed=k["x"],
+                            )
+                        except (json.JSONDecodeError, KeyError, TypeError) as e:
+                            logger.debug("BinanceKlineProvider: parse error: %s", e)
+                            continue
+            except (ConnectionClosedError, WebSocketException, OSError) as e:
+                logger.warning(
+                    "BinanceKlineProvider: connection lost (%s) — reconnecting in %ds",
+                    e, backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)  # cap at 60s
 
     async def get_recent_klines(
         self,
@@ -111,6 +124,15 @@ class BinanceKlineProvider:
 
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.get(url, params=params)
+            if resp.status_code == 400:
+                # Symbol not listed on Binance (e.g. US stock tickers)
+                logger.debug("BinanceKlineProvider: symbol %s not found on Binance (400) — skipping", symbol)
+                return []
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                logger.warning("BinanceKlineProvider: rate limited — sleeping %ds", retry_after)
+                await asyncio.sleep(retry_after)
+                return []
             resp.raise_for_status()
             data = resp.json()
 

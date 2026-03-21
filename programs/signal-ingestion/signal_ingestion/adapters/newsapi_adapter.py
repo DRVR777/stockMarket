@@ -87,6 +87,15 @@ class NewsAPIAdapter:
                     "apiKey": self._api_key,
                 },
             )
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", 60))
+                logger.warning("NewsAPIAdapter: rate limited — sleeping %ds", retry_after)
+                await asyncio.sleep(retry_after)
+                return
+            if resp.status_code == 401:
+                logger.error("NewsAPIAdapter: API key rejected (401) — pausing 1h")
+                await asyncio.sleep(3600)
+                return
             resp.raise_for_status()
             body = resp.json()
 

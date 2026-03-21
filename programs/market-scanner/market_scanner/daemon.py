@@ -266,6 +266,10 @@ class OracleDaemon:
         from market_scanner.data_pipeline import DataPipeline
         self._pipeline = DataPipeline(redis_client)
 
+        # Knowledge graph — continuous semantic memory in ChromaDB
+        from market_scanner.knowledge_graph import KnowledgeGraph
+        self._kg = KnowledgeGraph()
+
     async def start(self) -> None:
         """Start all processes concurrently."""
         self._running = True
@@ -280,6 +284,7 @@ class OracleDaemon:
             self._run_funding_scanner(),
             self._run_polymarket_scanner(),
             self._run_cascade_monitor(),
+            self._run_kg_market_snapshots(),
         )
 
     async def _run_scanner(self) -> None:
@@ -320,6 +325,7 @@ class OracleDaemon:
             await self._pipeline.process_signal(signal_data)
             await self._journal.log_signal(signal_data)
             await self._paper.on_signal(signal_data)
+            await self._kg.add_signal(signal_data)
 
         scanner._publish = augmented_publish
         await scanner.start()
@@ -342,10 +348,13 @@ class OracleDaemon:
             await asyncio.sleep(300)
             paper = self._paper.get_stats()
             journal = self._journal.get_stats()
+            kg_stats = self._kg.stats()
             logger.info(
-                "STATUS: capital=$%.0f (%+.1f%%)  open=%d  closed=%d  wr=%.0f%%  pending_journal=%d",
+                "STATUS: capital=$%.0f (%+.1f%%)  open=%d  closed=%d  wr=%.0f%%  "
+                "journal=%d  kg_signals=%d  kg_outcomes=%d  kg_snapshots=%d",
                 paper["capital"], paper["return_pct"], paper["open_trades"],
                 paper["closed_trades"], paper["win_rate"], journal["pending"],
+                kg_stats["signals"], kg_stats["outcomes"], kg_stats["market_snapshots"],
             )
             # Save to Redis for dashboard
             await self._redis.set("oracle:daemon_status", json.dumps({
@@ -390,6 +399,7 @@ class OracleDaemon:
                         await self._pipeline.process_signal(signal_data)
                         await self._journal.log_signal(signal_data)
                         await self._paper.on_signal(signal_data)
+                        await self._kg.add_signal(signal_data)
                         logger.info("Stock signal: %s %s  conf=%.0f%%  setup=%s",
                                     signal_data["direction"].upper(), ticker,
                                     smc.confidence * 100, smc.setup_type)
@@ -420,6 +430,7 @@ class OracleDaemon:
                     }
                     await self._pipeline.process_signal(signal_data)
                     await self._journal.log_signal(signal_data)
+                    await self._kg.add_signal(signal_data)
                     logger.info("Funding signal: %s %s  rate=%+.3f%%/8h  daily=%.2f%%",
                                 opp.direction.upper(), opp.symbol,
                                 opp.funding_rate, opp.daily_income_pct)
@@ -451,6 +462,7 @@ class OracleDaemon:
                     }
                     await self._pipeline.process_signal(signal_data)
                     await self._journal.log_signal(signal_data)
+                    await self._kg.add_signal(signal_data)
                     logger.info("Polymarket signal: %s  delta=%+.1f%%  \"%s\"",
                                 opp.direction, opp.delta * 100, opp.question[:50])
             except Exception:
@@ -483,6 +495,7 @@ class OracleDaemon:
                     }
                     await self._pipeline.process_signal(signal_data)
                     await self._journal.log_signal(signal_data)
+                    await self._kg.add_signal(signal_data)
                     logger.info("Cascade signal: %s %s  risk=%.0f%%  crowd=%s %.0f%%",
                                 direction.upper(), r.symbol,
                                 r.risk_score * 100, r.crowded_direction, r.crowd_pct)
@@ -490,6 +503,47 @@ class OracleDaemon:
                 logger.debug("Cascade monitor failed", exc_info=True)
 
             await asyncio.sleep(300)  # every 5 min
+
+    async def _run_kg_market_snapshots(self) -> None:
+        """Embed a market state snapshot into the knowledge graph every hour."""
+        while self._running:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=10) as client:
+                    fg_resp = await client.get("https://api.alternative.me/fng/?limit=1&format=json")
+                    fg = int(fg_resp.json()["data"][0]["value"])
+
+                    btc_resp = await client.get(
+                        "https://api.binance.com/api/v3/ticker/24hr",
+                        params={"symbol": "BTCUSDT"},
+                    )
+                    btc = btc_resp.json()
+                    btc_price = float(btc["lastPrice"])
+                    btc_change = float(btc["priceChangePercent"])
+
+                    funding_resp = await client.get("https://fapi.binance.com/fapi/v1/premiumIndex")
+                    rates = [(r["symbol"], abs(float(r.get("lastFundingRate", 0))), float(r.get("lastFundingRate", 0)))
+                             for r in funding_resp.json() if r.get("lastFundingRate")]
+                    rates.sort(key=lambda x: x[1], reverse=True)
+                    top_sym, _, top_rate = rates[0] if rates else ("", 0, 0)
+
+                snapshot = {
+                    "fear_greed": fg,
+                    "btc_price": btc_price,
+                    "btc_24h_change": btc_change,
+                    "top_funding_symbol": top_sym,
+                    "top_funding_rate": top_rate * 100,
+                    "regime": "risk_on" if fg > 55 else "risk_off" if fg < 45 else "neutral",
+                }
+                await self._kg.add_market_snapshot(snapshot)
+                logger.info(
+                    "KG snapshot: fg=%d  btc=$%.0f (%+.1f%%)  top_funding=%s %.3f%%",
+                    fg, btc_price, btc_change, top_sym, top_rate * 100,
+                )
+            except Exception:
+                logger.debug("KG market snapshot failed", exc_info=True)
+
+            await asyncio.sleep(3600)  # every hour
 
     async def stop(self) -> None:
         self._running = False
@@ -508,6 +562,13 @@ async def main():
 
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     redis_client = aioredis.from_url(redis_url, decode_responses=True)
+
+    try:
+        from oracle_shared.db import init_db
+        await init_db()
+        logger.info("DB schema verified (CREATE IF NOT EXISTS)")
+    except Exception:
+        logger.warning("DB init failed — continuing without Postgres", exc_info=True)
 
     logger.info("=" * 55)
     logger.info("  ORACLE DAEMON — Always-On Trading Pipeline")

@@ -168,6 +168,15 @@ class BirdeyeWSAdapter:
                                 "x-chain": "solana",
                             },
                         )
+                        if resp.status_code == 429:
+                            retry_after = int(resp.headers.get("Retry-After", 30))
+                            logger.warning("BirdeyeWSAdapter: rate limited — sleeping %ds", retry_after)
+                            await asyncio.sleep(retry_after)
+                            continue
+                        if resp.status_code == 401:
+                            logger.error("BirdeyeWSAdapter: API key rejected (401) — pausing 1h")
+                            await asyncio.sleep(3600)
+                            return
                         resp.raise_for_status()
                         body = resp.json().get("data", {})
                         signal = Signal(
